@@ -1,0 +1,17 @@
+interview-api/
+│-- main.py
+│-- requirements.txt
+│-- app/
+│   ├── __init__.py
+│   ├── routes/
+│   │   ├── __init__.py
+│   │   ├── interview.py
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── processing.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── interview.py
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── settings.py

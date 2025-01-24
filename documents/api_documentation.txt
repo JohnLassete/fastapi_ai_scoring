@@ -1,0 +1,211 @@
+# Interview Processing and Evaluation API Documentation
+
+## Overview
+
+This API facilitates the following functionalities:
+
+1. **Project 1:** Process interview videos, including downloading, transcription, and storage on S3.
+2. **Project 2:** Evaluate candidate answers by calculating scores using multiple AI models.
+3. **Project 3:** Retrieve previously processed interview and evaluation details.
+
+---
+
+## Endpoints
+
+### 1. POST /process-interview
+
+**Description:** Initiates the processing of an interview. Downloads videos, transcribes them, stores transcription files in S3, and updates the database.
+
+**Request:**
+
+- **URL:** `/process-interview`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+  ```json
+  {
+    "interview_id": 10
+  }
+  ```
+
+**Response:**
+
+1. **Success Response:**
+
+   - HTTP Status: `202 Accepted`
+   - Response Body:
+     ```json
+     {
+       "status": "processing",
+       "message": "The processing has started. Connect to the WebSocket for progress updates.",
+       "interview_id": 10
+     }
+     ```
+
+2. **Failure Responses:**
+
+   - **Invalid Interview ID:**
+     - HTTP Status: `404 Not Found`
+     - Response Body:
+       ```json
+       {
+         "status": "error",
+         "message": "Interview ID not found in the database",
+         "interview_id": 10
+       }
+       ```
+   - **Unexpected Server Error:**
+     - HTTP Status: `500 Internal Server Error`
+     - Response Body:
+       ```json
+       {
+         "status": "error",
+         "message": "An unexpected error occurred while starting the process",
+         "interview_id": 10
+       }
+       ```
+
+---
+
+### 2. WebSocket /ws/progress
+
+**Description:** Establishes a WebSocket connection for real-time progress tracking and notifications.
+
+**WebSocket Events:**
+
+1. **Client Message:**
+   ```json
+   {
+     "action": "subscribe",
+     "interview_id": 10
+   }
+   ```
+2. **Server Messages:**
+   - Connection Accepted:
+     ```json
+     {
+       "status": "connected",
+       "message": "Successfully subscribed to updates for interview_id 10."
+     }
+     ```
+   - Progress Update:
+     ```json
+     {
+       "status": "in_progress",
+       "interview_id": 10,
+       "progress": 45,
+       "message": "Video transcription in progress",
+       "timestamp": "2025-01-23T15:30:00Z"
+     }
+     ```
+   - Completion Notification:
+     ```json
+     {
+       "status": "completed",
+       "interview_id": 10,
+       "message": "Processing completed successfully.",
+       "result": {
+         "questions_processed": [
+           {
+             "question_id": 48,
+             "asrfile_s3key": "s3://seekers3data/ConvertedTextFile/100_BD4.txt"
+           }
+         ]
+       },
+       "timestamp": "2025-01-23T15:45:00Z"
+     }
+     ```
+
+---
+
+### 3. POST /evaluate-answers
+
+**Description:** Evaluates candidate answers using AI models, calculates scores, updates the database, and returns the results.
+
+**Request:**
+
+- **URL:** `/evaluate-answers`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+  ```json
+  {
+    "interview_id": 10,
+    "question_id": 49,
+    "model_config": {
+      "semantic_similarity": "platform.openai.com",
+      "broad_topic_similarity": "huggingface.co/nvidia/NV-Embed-v2",
+      "grammar": "huggingface.co/Salesforce/SFR-Embedding-Mistral",
+      "disfluency": "huggingface.co/Salesforce/SFR-Embedding-Mistral"
+    }
+  }
+  ```
+
+**Response:**
+
+1. **Success Response:**
+   - HTTP Status: `202 Accepted`
+   - Response Body:
+     ```json
+     {
+       "status": "processing",
+       "message": "Evaluation started. Connect to the WebSocket for progress updates.",
+       "interview_id": 10,
+       "question_id": 49
+     }
+     ```
+
+---
+
+### 4. GET /interview-results
+
+**Description:** Retrieves previously processed interview and evaluation details.
+
+**Request:**
+
+- **URL:** `/interview-results?interview_id=10`
+- **Method:** `GET`
+
+**Response:**
+
+1. **Success Response:**
+   - HTTP Status: `200 OK`
+   - Response Body:
+     ```json
+     {
+       "interview_id": 10,
+       "status": "completed",
+       "completed_at": "2025-01-21T16:00:00Z",
+       "results": {
+         "questions_processed": [
+           {
+             "question_id": 48,
+             "asrfile_s3key": "s3://seekers3data/ConvertedTextFile/100_BD4.txt",
+             "scores": {
+               "semantic_similarity_score": 85,
+               "broad_topic_sim_score": 79,
+               "grammar_score": 82,
+               "disfluency_score": 78
+             }
+           }
+         ]
+       }
+     }
+     ```
+
+---
+
+## Status Summary
+
+| Status                      | Description                                        |
+| --------------------------- | -------------------------------------------------- |
+| `202 Accepted`              | Processing or evaluation started successfully.     |
+| `200 OK`                    | Data retrieval was successful.                     |
+| `404 Not Found`             | Interview or question ID not found.                |
+| `500 Internal Server Error` | Unexpected error occurred.                         |
+| `in_progress`               | Processing or evaluation is ongoing.               |
+| `completed`                 | Processing or evaluation successfully completed.   |
+| `error`                     | An error occurred during processing or evaluation. |
+
+
+
