@@ -1,6 +1,7 @@
 interview-api/
 │-- main.py
 │-- requirements.txt
+│-- BastionHostKeyPair.pem
 │-- app/
 │   ├── __init__.py
 │   ├── routes/
@@ -16,3 +17,4 @@ interview-api/
 │   ├── config/
 │   │   ├── __init__.py
 │   │   ├── settings.py
+│   │   ├── db.py
