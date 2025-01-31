@@ -1,0 +1,69 @@
++---------------------------------------------------------+
+|                    interview                            |
++---------------------------------------------------------+
+| Column Name               | Data Type                   |
++---------------------------+-----------------------------+
+| interview_id [PK]         | bigint                      |
+| interview_date            | timestamp without time zone |
+| candidate_id              | bigint                      |
+| manager_id                | bigint                      |
+| remarks                   | text                        |
+| created_on                | timestamp without time zone |
+| updated_at                | timestamp without time zone |
++---------------------------------------------------------+
+
+
++----------------------------------------------------------------+
+|                       evaluation                               |
++----------------------------------------------------------------+
+| Column Name                      | Data Type                   |
++----------------------------------+-----------------------------+
+| evaluation_id [PK]               | bigint                      |
+| interview_id                     | bigint                      |
+| question_id                      | bigint                      |
+| asrfilename                      | text                        |
+| semantic_similarity_score        | numeric(3)                  |
+| broad_topic_sim_score            | numeric(3)                  |
+| grammar_score                    | numeric(3)                  |
+| disfluency_score                 | numeric(3)                  |
+| videofilename                    | text                        |
+| videofile_s3key                  | text                        |
+| asrfile_s3key                    | text                        |
+| created_at                       | timestamp without time zone |
+| updated_at                       | timestamp without time zone |
++----------------------------------------------------------------+
+
+
++----------------------------------------------------------------+
+|                       questions                                |
++----------------------------------------------------------------+
+| Column Name                      | Data Type                   |
++----------------------------------+-----------------------------+
+| question_id [PK]                 | bigint                      |
+| primary_skill_id                 | integer                     |
+| sub_tech                         | text                        |
+| difficulty_level                 | smallint                    |
+| question_level                   | smallint                    |
+| time_to_answer                   | integer                     |
+| question_text                    | text                        |
+| code_file_name                   | text                        |
+| created_at                       | timestamp without time zone |
+| updated_at                       | timestamp without time zone |
+| question_image_s3_link           | text                        |
+| question_video_s3_link           | text                        |
++----------------------------------------------------------------+
+
+
++-----------------------------------------------------------------+
+|                        answers                                  |
++-----------------------------------------------------------------+
+| Column Name                       | Data Type                   |
++-----------------------------------+-----------------------------+
+| answer_id [PK]                    | bigint                      |
+| answer                            | text                        |
+| question_id                       | bigint                      |
+| created_at                        | timestamp without time zone |
+| updated_at                        | timestamp without time zone |
++-----------------------------------------------------------------+
+
+

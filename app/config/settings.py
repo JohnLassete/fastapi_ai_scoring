@@ -15,7 +15,7 @@ SSH_CONFIG = {
 DB_CONFIG = {
     "DB_HOST": "databasets.chygq4ecec7u.us-east-2.rds.amazonaws.com",
     "DB_PORT": 5432,
-    "DB_NAME": "postgres",
+    "DB_NAME": "seekers",
     "DB_USER": "postgres_TS",
     "DB_PASS": "BBCPs2025_",
 }

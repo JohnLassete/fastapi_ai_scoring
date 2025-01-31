@@ -4,6 +4,7 @@ from pathlib import Path
 from sshtunnel import SSHTunnelForwarder
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
 from app.config.settings import SSH_CONFIG, DB_CONFIG
 
 # Configure logging
@@ -13,22 +14,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Log configuration details
+# Initialize database configuration
 logger.info("Initializing database configuration...")
 
+# Resolve paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-logger.debug(f"Base directory resolved: {BASE_DIR}")
-
 SSH_KEY_PATH = str(BASE_DIR / "BastionHostKeyPair.pem")
+logger.debug(f"Base directory resolved: {BASE_DIR}")
 logger.debug(f"Using SSH Key Path: {SSH_KEY_PATH}")
 
 # Ensure SSH key file exists
 if not os.path.exists(SSH_KEY_PATH):
     logger.error("SSH Key file not found! Check the path.")
+    raise FileNotFoundError("SSH Key file not found at the specified path.")
 else:
     logger.info("SSH Key file found, proceeding with SSH tunnel setup.")
 
-# Establish SSH Tunnel with logging
+# Establish SSH Tunnel
 try:
     logger.info("Establishing SSH tunnel...")
     tunnel = SSHTunnelForwarder(
@@ -45,7 +47,10 @@ except Exception as e:
     raise
 
 # Database connection string (localhost mapped via SSH tunnel)
-DB_URL = f"postgresql://{DB_CONFIG['DB_USER']}:{DB_CONFIG['DB_PASS']}@127.0.0.1:{tunnel.local_bind_port}/{DB_CONFIG['DB_NAME']}"
+DB_URL = (
+    f"postgresql://{DB_CONFIG['DB_USER']}:{DB_CONFIG['DB_PASS']}"
+    f"@127.0.0.1:{tunnel.local_bind_port}/{DB_CONFIG['DB_NAME']}"
+)
 logger.debug(f"Database URL: {DB_URL}")
 
 # Create SQLAlchemy engine and session
@@ -59,6 +64,9 @@ except Exception as e:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Base for SQLAlchemy models
+Base = declarative_base()
+
 def get_db():
     """Dependency to get the database session."""
     logger.info("Creating new database session...")
@@ -68,6 +76,7 @@ def get_db():
         logger.info("Database session created successfully.")
     except Exception as e:
         logger.error(f"Error during database session: {e}")
+        raise
     finally:
         db.close()
         logger.info("Database session closed.")
