@@ -9,7 +9,7 @@ from app.config.settings import SSH_CONFIG, DB_CONFIG
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,  # Change from DEBUG to INFO
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)

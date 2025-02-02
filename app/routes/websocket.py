@@ -33,3 +33,15 @@ async def interview_progress(websocket: WebSocket):
         })
     except WebSocketDisconnect:
         del connected_clients[interview_id]
+
+@router.websocket("/ws/progress/{interview_id}")
+async def websocket_endpoint(websocket: WebSocket, interview_id: int):
+    await websocket.accept()
+    connected_clients[interview_id] = websocket
+    print(f"Client connected for interview {interview_id}")
+    try:
+        while True:
+            await websocket.receive_text()  # Keep the connection alive
+    except WebSocketDisconnect:
+        del connected_clients[interview_id]
+        print(f"Client disconnected from interview {interview_id}")
