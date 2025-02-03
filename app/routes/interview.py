@@ -1,13 +1,18 @@
+import os
 import boto3
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import text
 from pydantic import BaseModel
 import asyncio
 from pathlib import Path
+import moviepy.editor as mp
+import whisper
+import traceback
 from app.config.db import get_db
 from app.models.interview import Interview
 from app.models.evaluation import Evaluation
-from app.utils.s3_utils import download_file_from_s3
+from app.utils.s3_utils import download_file_from_s3, upload_file_to_s3
 from app.config.settings import S3_CONFIG
 from app.routes.websocket import connected_clients
 
@@ -58,6 +63,8 @@ async def process_files(interview_id: int, db: Session, loop):
     videos_dir = base_dir / "videos"
     videos_dir.mkdir(parents=True, exist_ok=True)
 
+    downloaded_files = []
+
     for evaluation in evaluations:
         # Get the video file S3 key from the database
         videofile_s3key = evaluation.videofile_s3key
@@ -88,11 +95,81 @@ async def process_files(interview_id: int, db: Session, loop):
 
         # Download the video file from S3 with progress tracking
         download_file_from_s3(bucket_name, s3_key, str(local_path), progress_callback)
+        downloaded_files.append(local_path)
+
+        # Process the video file to extract transcription
+        asr_file_path = await process_video_file(str(local_path), "ConvertedTextFile/", loop)
+
+        if asr_file_path:
+            # Update the PostgreSQL database with the S3 URL of the transcription
+            update_asr_filename_in_postgres(db, videofile_s3key, asr_file_path)
 
     if interview_id in connected_clients:
         await connected_clients[interview_id].send_json({
             "status": "completed",
             "interview_id": interview_id,
-            "message": "Downloading completed successfully."
+            "message": "Downloading and transcription completed successfully."
         })
+
+    # Cleanup downloaded video files
+    for file_path in downloaded_files:
+        try:
+            os.remove(file_path)
+            print(f"Deleted downloaded file: {file_path}")
+        except Exception as e:
+            print(f"Error deleting file {file_path}: {e}")
+
     print(f"Completed processing for interview {interview_id}")
+
+async def process_video_file(video_file_path, upload_dir, loop):
+    """Process video file, extract text using Whisper model, and upload to S3."""
+    try:
+        print(f"Processing video file: {video_file_path}")
+        video = mp.VideoFileClip(video_file_path)
+
+        # Extract audio from video
+        audio_path = video_file_path.rsplit('.', 1)[0] + '.wav'  # Handles both .mp4 and .mov
+        video.audio.write_audiofile(audio_path, codec='pcm_s16le')
+        print(f"Audio extracted: {audio_path}")
+
+        # Transcribe audio using Whisper
+        whisper_model = whisper.load_model("base")
+        result = whisper_model.transcribe(audio_path)
+        text = result['text']
+        print(f"Text extracted: {text[:100]}...")
+
+        # Upload the transcribed text to S3
+        upload_file_path = os.path.join(upload_dir, os.path.basename(video_file_path).rsplit('.', 1)[0] + '.txt')
+        upload_file_to_s3(S3_CONFIG["S3_BUCKET_NAME"], upload_file_path, text)
+
+        # Cleanup
+        video.close()
+        os.remove(audio_path)
+
+        return f"s3://{S3_CONFIG['S3_BUCKET_NAME']}/{upload_file_path}"  # Return the S3 path for ASRFileName
+    except Exception as e:
+        print(f"Error processing video file {video_file_path}: {e}")
+        traceback.print_exc()
+        return None
+
+def update_asr_filename_in_postgres(db: Session, video_file_name: str, asr_file_name: str):
+    """Update ASRFileName in PostgreSQL."""
+    try:
+        print(f"Updating ASRFileName for {video_file_name} in PostgreSQL...")
+        update_query = """
+        UPDATE public.evaluation
+        SET 
+            "asrfile_s3key" = :asr_file_name
+        WHERE 
+            "videofile_s3key" = :video_file_name;
+        """
+        print(f"Executing query: {update_query} with values {video_file_name}, {asr_file_name}")
+        result = db.execute(text(update_query), {"asr_file_name": asr_file_name, "video_file_name": video_file_name})
+        db.commit()
+        if result.rowcount > 0:
+            print(f"ASRFileName for {video_file_name} updated successfully.")
+        else:
+            print(f"No rows updated for {video_file_name}, check the query conditions.")
+    except Exception as e:
+        print(f"Error updating ASRFileName in PostgreSQL: {e}")
+        traceback.print_exc()

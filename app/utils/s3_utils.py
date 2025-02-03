@@ -42,7 +42,7 @@ def upload_file_to_s3(bucket_name, s3_key, content):
         aws_secret_access_key=S3_CONFIG["AWS_SECRET_ACCESS_KEY"]
     )
     try:
-        s3.put_object(Bucket=bucket_name, Key=s3_key, Body=content)
+        s3.put_object(Bucket=bucket_name, Key=s3_key, Body=content, ContentType='text/plain')
         print(f"Uploaded {s3_key} to {bucket_name}")
     except NoCredentialsError:
         print("Credentials not available")
