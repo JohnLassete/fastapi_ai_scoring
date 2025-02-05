@@ -6,6 +6,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from app.config.settings import SSH_CONFIG, DB_CONFIG
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -23,35 +27,49 @@ SSH_KEY_PATH = str(BASE_DIR / "BastionHostKeyPair.pem")
 logger.debug(f"Base directory resolved: {BASE_DIR}")
 logger.debug(f"Using SSH Key Path: {SSH_KEY_PATH}")
 
-# Ensure SSH key file exists
-if not os.path.exists(SSH_KEY_PATH):
-    logger.error("SSH Key file not found! Check the path.")
-    raise FileNotFoundError("SSH Key file not found at the specified path.")
-else:
-    logger.info("SSH Key file found, proceeding with SSH tunnel setup.")
+# Get environment type from the .env file
+ENVIRONMENT_TYPE = os.getenv("ENVIRONMENT_TYPE", "local").lower()
 
-# Establish SSH Tunnel
-try:
-    logger.info("Establishing SSH tunnel...")
-    tunnel = SSHTunnelForwarder(
-        (SSH_CONFIG["SSH_HOST"], SSH_CONFIG["SSH_PORT"]),
-        ssh_username=SSH_CONFIG["SSH_USERNAME"],
-        ssh_pkey=SSH_KEY_PATH,
-        remote_bind_address=(DB_CONFIG["DB_HOST"], DB_CONFIG["DB_PORT"]),
+# Check if the environment is local or EC2
+if ENVIRONMENT_TYPE == "local":
+    # Ensure SSH key file exists
+    if not os.path.exists(SSH_KEY_PATH):
+        logger.error("SSH Key file not found! Check the path.")
+        raise FileNotFoundError("SSH Key file not found at the specified path.")
+    else:
+        logger.info("SSH Key file found, proceeding with SSH tunnel setup.")
+
+    # Establish SSH Tunnel
+    try:
+        logger.info("Establishing SSH tunnel...")
+        tunnel = SSHTunnelForwarder(
+            (SSH_CONFIG["SSH_HOST"], SSH_CONFIG["SSH_PORT"]),
+            ssh_username=SSH_CONFIG["SSH_USERNAME"],
+            ssh_pkey=SSH_KEY_PATH,
+            remote_bind_address=(DB_CONFIG["DB_HOST"], DB_CONFIG["DB_PORT"]),
+        )
+        tunnel.start()
+        logger.info("SSH tunnel established successfully.")
+        logger.debug(f"Local bind port: {tunnel.local_bind_port}")
+    except Exception as e:
+        logger.error(f"Failed to establish SSH tunnel: {e}")
+        raise
+
+    # Database connection string (localhost mapped via SSH tunnel)
+    DB_URL = (
+        f"postgresql://{DB_CONFIG['DB_USER']}:{DB_CONFIG['DB_PASS']}"
+        f"@127.0.0.1:{tunnel.local_bind_port}/{DB_CONFIG['DB_NAME']}"
     )
-    tunnel.start()
-    logger.info("SSH tunnel established successfully.")
-    logger.debug(f"Local bind port: {tunnel.local_bind_port}")
-except Exception as e:
-    logger.error(f"Failed to establish SSH tunnel: {e}")
-    raise
+    logger.debug(f"Database URL: {DB_URL}")
 
-# Database connection string (localhost mapped via SSH tunnel)
-DB_URL = (
-    f"postgresql://{DB_CONFIG['DB_USER']}:{DB_CONFIG['DB_PASS']}"
-    f"@127.0.0.1:{tunnel.local_bind_port}/{DB_CONFIG['DB_NAME']}"
-)
-logger.debug(f"Database URL: {DB_URL}")
+else:
+    # If it's EC2, just use the direct DB connection (no SSH tunnel)
+    DB_URL = (
+        f"postgresql://{DB_CONFIG['DB_USER']}:{DB_CONFIG['DB_PASS']}"
+        f"@{DB_CONFIG['DB_HOST']}:{DB_CONFIG['DB_PORT']}/{DB_CONFIG['DB_NAME']}"
+    )
+    logger.info("Running on EC2, no SSH tunnel required.")
+    logger.debug(f"Database URL: {DB_URL}")
 
 # Create SQLAlchemy engine and session
 try:
