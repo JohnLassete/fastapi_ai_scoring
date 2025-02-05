@@ -54,6 +54,9 @@ async def process_interview(request: InterviewRequest, background_tasks: Backgro
         # If no interview is found, raise a 404 error
         raise HTTPException(status_code=404, detail="Interview ID not found in the database")
 
+    # Log processing start
+    print(f"Processing interview {request.interview_id} for candidate {interview.candidate_id}...")
+
     # Trigger the background task for processing the interview
     background_tasks.add_task(process_files, interview.interview_id, db)
 
@@ -67,11 +70,17 @@ async def process_interview(request: InterviewRequest, background_tasks: Backgro
     )
 
 async def process_files(interview_id: int, db: Session):
+    # Log that file processing has started
+    print(f"Started processing files for interview {interview_id}...")
+
     # Query the database for all evaluations using the provided interview_id
     evaluations = db.query(Evaluation).filter(Evaluation.interview_id == interview_id).all()
 
     if not evaluations:
         raise HTTPException(status_code=404, detail="Evaluations for Interview ID not found in the database")
+
+    # Log that evaluations are found
+    print(f"Found {len(evaluations)} evaluations for interview {interview_id}...")
 
     # Create the videos directory in the base folder if it doesn't exist
     base_dir = Path(__file__).resolve().parent.parent.parent
@@ -81,6 +90,9 @@ async def process_files(interview_id: int, db: Session):
     downloaded_files = []
 
     for evaluation in evaluations:
+        # Log about each evaluation being processed
+        print(f"Processing evaluation {evaluation.evaluation_id}...")
+
         # Get the video file S3 key from the database
         videofile_s3key = evaluation.videofile_s3key
 
@@ -112,16 +124,23 @@ async def process_files(interview_id: int, db: Session):
                     "message": f"Downloading {progress}% complete for video {s3_key}",
                 })
 
+        # Log the S3 key and downloading file
+        print(f"Downloading video file from S3: {s3_key}...")
+
         # Download the video file from S3 with progress tracking
         download_file_from_s3(bucket_name, s3_key, str(local_path), progress_callback)
         downloaded_files.append(local_path)
 
         # Process the video file to extract transcription
+        print(f"Processing video file for transcription: {local_path}...")
         asr_file_path = await process_video_file(str(local_path), "ConvertedTextFile/")
 
         if asr_file_path:
             # Update the PostgreSQL database with the S3 URL of the transcription
             update_asr_filename_in_postgres(db, videofile_s3key, asr_file_path)
+
+    # Log when processing is completed
+    print(f"All video files processed for interview {interview_id}.")
 
     if interview_id in connected_clients:
         await connected_clients[interview_id].send_json({
@@ -160,6 +179,7 @@ async def process_video_file(video_file_path, upload_dir):
         # Upload the transcribed text to S3
         upload_file_path = os.path.join(upload_dir, os.path.basename(video_file_path).rsplit('.', 1)[0] + '.txt')
         upload_file_to_s3(S3_CONFIG["S3_BUCKET_NAME"], upload_file_path, text)
+        print(f"Transcribed text uploaded to S3: {upload_file_path}")
 
         # Cleanup
         video.close()
@@ -235,15 +255,14 @@ def calculate_scores_with_gpt4o(transcribed_text):
     if not api_key:
         raise ValueError("OPENAI_API_KEY is not set in the .env file")
     client = OpenAI(api_key=api_key)
-    prompt = f"Calculate the following scores for the given text: semantic similarity, broad topic similarity, grammar, and disfluency. Each score should be on a scale of 0 to 100. Output only the scores separated by commas.\n\nText: {transcribed_text}"
+    prompt = f"Calculate the following scores for the given text: semantic similarity, broad topic similarity, grammar, and disfluency. Each score should be on a scale of 0 to 100. Output only the scores separated by commas.\n\nText: {transcribed_text} \n\n Output only the scores separated by commas. I don't want any other text or explanation."
     data = {
         "prompt": prompt
     }
+    print(f"Requesting GPT-4o mini for scoring...")
     chat_completion = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
+        messages=[{"role": "user", "content": prompt}]
     )
 
     generated_text = chat_completion.choices[0].message.content
@@ -267,65 +286,25 @@ async def score_interview(request: InterviewRequest, db: Session = Depends(get_d
     if not evaluations:
         raise HTTPException(status_code=404, detail="Evaluations for Interview ID not found in the database")
 
-    for evaluation in evaluations:
-        # Get the ASR file S3 key
-        asrfile_s3key = evaluation.asrfile_s3key.replace("s3://seekers3data/", "")
-
-        # Read the transcribed text from the ASR file in S3
-        transcribed_text = read_s3_text_file(S3_CONFIG["S3_BUCKET_NAME"], asrfile_s3key)
-
-        if not transcribed_text:
-            raise HTTPException(status_code=404, detail=f"ASR file not found in S3: {asrfile_s3key}")
-
-        # Calculate scores using GPT-4o mini API
-        semantic_similarity_score, broad_topic_sim_score, grammar_score, disfluency_score = calculate_scores_with_gpt4o(transcribed_text)
-
-        # Update the evaluation with the scores
-        evaluation.semantic_similarity_score = semantic_similarity_score
-        evaluation.broad_topic_sim_score = broad_topic_sim_score
-        evaluation.grammar_score = grammar_score
-        evaluation.disfluency_score = disfluency_score
-        db.commit()
-
-    return ScoringResponse(
-        interview_id=request.interview_id,
-        question_id=evaluation.question_id,
-        semantic_similarity_score=semantic_similarity_score,
-        broad_topic_sim_score=broad_topic_sim_score,
-        grammar_score=grammar_score,
-        disfluency_score=disfluency_score,
-        message="Scoring completed successfully."
-    )
-
-@router.post("/score-interview-NV-Embed-v2", response_model=ScoringResponse)
-async def score_interview(request: InterviewRequest, db: Session = Depends(get_db)):
-    # Query the database for the interview using the provided interview_id
-    interview = db.query(Interview).filter(Interview.interview_id == request.interview_id).first()
-
-    if not interview:
-        # If no interview is found, raise a 404 error
-        raise HTTPException(status_code=404, detail="Interview ID not found in the database")
-
-    # Query the database for evaluations using the provided interview_id
-    evaluations = db.query(Evaluation).filter(Evaluation.interview_id == request.interview_id).all()
-
-    if not evaluations:
-        raise HTTPException(status_code=404, detail="Evaluations for Interview ID not found in the database")
+    print(f"Found {len(evaluations)} evaluations for interview {request.interview_id}.")
 
     for evaluation in evaluations:
         # Get the ASR file S3 key
         asrfile_s3key = evaluation.asrfile_s3key.replace("s3://seekers3data/", "")
 
         # Read the transcribed text from the ASR file in S3
+        print(f"Reading transcribed text from S3 for ASR file: {asrfile_s3key}...")
         transcribed_text = read_s3_text_file(S3_CONFIG["S3_BUCKET_NAME"], asrfile_s3key)
 
         if not transcribed_text:
             raise HTTPException(status_code=404, detail=f"ASR file not found in S3: {asrfile_s3key}")
 
         # Calculate scores using GPT-4o mini API
+        print(f"Calculating scores for interview {request.interview_id}...")
         semantic_similarity_score, broad_topic_sim_score, grammar_score, disfluency_score = calculate_scores_with_gpt4o(transcribed_text)
 
         # Update the evaluation with the scores
+        print(f"Updating evaluation {evaluation.evaluation_id} with scores...")
         evaluation.semantic_similarity_score = semantic_similarity_score
         evaluation.broad_topic_sim_score = broad_topic_sim_score
         evaluation.grammar_score = grammar_score
