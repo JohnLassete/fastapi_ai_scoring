@@ -1,20 +1,25 @@
 import os
-import boto3
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
-from sqlalchemy.sql import text
 from pydantic import BaseModel
-import asyncio
 from pathlib import Path
-import moviepy.editor as mp
-import whisper
-import traceback
 from app.config.db import get_db
 from app.models.interview import Interview
 from app.models.evaluation import Evaluation
+from app.models.questions import Questions
+from app.models.answers import Answers
 from app.utils.s3_utils import download_file_from_s3, upload_file_to_s3
 from app.config.settings import S3_CONFIG
 from app.routes.websocket import connected_clients
+import moviepy.editor as mp
+import traceback
+import whisper
+from sqlalchemy.sql import text
+import boto3
+from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 router = APIRouter()
 
@@ -30,6 +35,16 @@ class InterviewResponse(BaseModel):
     status: str
     message: str
 
+# Scoring response model
+class ScoringResponse(BaseModel):
+    interview_id: int
+    question_id: int
+    semantic_similarity_score: float
+    broad_topic_sim_score: float
+    grammar_score: float
+    disfluency_score: float
+    message: str
+
 @router.post("/process-interview", response_model=InterviewResponse)
 async def process_interview(request: InterviewRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     # Query the database for the interview using the provided interview_id
@@ -40,7 +55,7 @@ async def process_interview(request: InterviewRequest, background_tasks: Backgro
         raise HTTPException(status_code=404, detail="Interview ID not found in the database")
 
     # Trigger the background task for processing the interview
-    background_tasks.add_task(process_files, interview.interview_id, db, asyncio.get_event_loop())
+    background_tasks.add_task(process_files, interview.interview_id, db)
 
     # Return the relevant interview details along with status and message
     return InterviewResponse(
@@ -51,7 +66,7 @@ async def process_interview(request: InterviewRequest, background_tasks: Backgro
         message="The Processing has started. Connect to the WebSocket for progress updates.",
     )
 
-async def process_files(interview_id: int, db: Session, loop):
+async def process_files(interview_id: int, db: Session):
     # Query the database for all evaluations using the provided interview_id
     evaluations = db.query(Evaluation).filter(Evaluation.interview_id == interview_id).all()
 
@@ -68,6 +83,10 @@ async def process_files(interview_id: int, db: Session, loop):
     for evaluation in evaluations:
         # Get the video file S3 key from the database
         videofile_s3key = evaluation.videofile_s3key
+
+        if not videofile_s3key:
+            print(f"No videofile_s3key found for evaluation {evaluation.evaluation_id}, skipping...")
+            continue
 
         # Extract the S3 key from the full S3 URI
         s3_key = videofile_s3key.replace("s3://seekers3data/", "")
@@ -98,7 +117,7 @@ async def process_files(interview_id: int, db: Session, loop):
         downloaded_files.append(local_path)
 
         # Process the video file to extract transcription
-        asr_file_path = await process_video_file(str(local_path), "ConvertedTextFile/", loop)
+        asr_file_path = await process_video_file(str(local_path), "ConvertedTextFile/")
 
         if asr_file_path:
             # Update the PostgreSQL database with the S3 URL of the transcription
@@ -121,7 +140,7 @@ async def process_files(interview_id: int, db: Session, loop):
 
     print(f"Completed processing for interview {interview_id}")
 
-async def process_video_file(video_file_path, upload_dir, loop):
+async def process_video_file(video_file_path, upload_dir):
     """Process video file, extract text using Whisper model, and upload to S3."""
     try:
         print(f"Processing video file: {video_file_path}")
@@ -173,3 +192,152 @@ def update_asr_filename_in_postgres(db: Session, video_file_name: str, asr_file_
     except Exception as e:
         print(f"Error updating ASRFileName in PostgreSQL: {e}")
         traceback.print_exc()
+
+def read_s3_text_file(bucket, file_name):
+    """
+    Reads a .txt file directly from an S3 bucket and returns its content as text.
+    
+    Parameters:
+        bucket (str): The name of the S3 bucket.
+        file_name (str): The filename to search for in the bucket.
+        
+    Returns:
+        str: The content of the file if found, or an empty string if not found.
+    """
+    try:
+        print(f"Bucket: {bucket}")
+        print(f"Searching for file: {file_name}")
+
+        # List objects in the bucket
+        s3_client = boto3.client('s3')
+        s3_objects = s3_client.list_objects(Bucket=bucket).get('Contents', [])
+
+        for s3_key in s3_objects:
+            s3_object = s3_key['Key']
+            # Check if the object matches the target filename and has a .txt extension
+            if file_name in s3_object and s3_object.endswith(".txt"):
+                print(f"Found file: {s3_object}")
+
+                # Read the file content directly from S3
+                obj = s3_client.get_object(Bucket=bucket, Key=s3_object)
+                content = obj['Body'].read().decode('utf-8')  # Decode bytes to a string
+                return content
+
+        print(f"No matching .txt file found for {file_name}")
+        return ""
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return ""
+
+def calculate_scores_with_gpt4o(transcribed_text):
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is not set in the .env file")
+    client = OpenAI(api_key=api_key)
+    prompt = f"Calculate the following scores for the given text: semantic similarity, broad topic similarity, grammar, and disfluency. Each score should be on a scale of 0 to 100. Output only the scores separated by commas.\n\nText: {transcribed_text}"
+    data = {
+        "prompt": prompt
+    }
+    chat_completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+    )
+
+    generated_text = chat_completion.choices[0].message.content
+    print("Assistant: " + generated_text)
+
+    scores = generated_text.split(',')
+    return float(scores[0]), float(scores[1]), float(scores[2]), float(scores[3])
+
+@router.post("/score-interview-gpt-4o-mini", response_model=ScoringResponse)
+async def score_interview(request: InterviewRequest, db: Session = Depends(get_db)):
+    # Query the database for the interview using the provided interview_id
+    interview = db.query(Interview).filter(Interview.interview_id == request.interview_id).first()
+
+    if not interview:
+        # If no interview is found, raise a 404 error
+        raise HTTPException(status_code=404, detail="Interview ID not found in the database")
+
+    # Query the database for evaluations using the provided interview_id
+    evaluations = db.query(Evaluation).filter(Evaluation.interview_id == request.interview_id).all()
+
+    if not evaluations:
+        raise HTTPException(status_code=404, detail="Evaluations for Interview ID not found in the database")
+
+    for evaluation in evaluations:
+        # Get the ASR file S3 key
+        asrfile_s3key = evaluation.asrfile_s3key.replace("s3://seekers3data/", "")
+
+        # Read the transcribed text from the ASR file in S3
+        transcribed_text = read_s3_text_file(S3_CONFIG["S3_BUCKET_NAME"], asrfile_s3key)
+
+        if not transcribed_text:
+            raise HTTPException(status_code=404, detail=f"ASR file not found in S3: {asrfile_s3key}")
+
+        # Calculate scores using GPT-4o mini API
+        semantic_similarity_score, broad_topic_sim_score, grammar_score, disfluency_score = calculate_scores_with_gpt4o(transcribed_text)
+
+        # Update the evaluation with the scores
+        evaluation.semantic_similarity_score = semantic_similarity_score
+        evaluation.broad_topic_sim_score = broad_topic_sim_score
+        evaluation.grammar_score = grammar_score
+        evaluation.disfluency_score = disfluency_score
+        db.commit()
+
+    return ScoringResponse(
+        interview_id=request.interview_id,
+        question_id=evaluation.question_id,
+        semantic_similarity_score=semantic_similarity_score,
+        broad_topic_sim_score=broad_topic_sim_score,
+        grammar_score=grammar_score,
+        disfluency_score=disfluency_score,
+        message="Scoring completed successfully."
+    )
+
+@router.post("/score-interview-NV-Embed-v2", response_model=ScoringResponse)
+async def score_interview(request: InterviewRequest, db: Session = Depends(get_db)):
+    # Query the database for the interview using the provided interview_id
+    interview = db.query(Interview).filter(Interview.interview_id == request.interview_id).first()
+
+    if not interview:
+        # If no interview is found, raise a 404 error
+        raise HTTPException(status_code=404, detail="Interview ID not found in the database")
+
+    # Query the database for evaluations using the provided interview_id
+    evaluations = db.query(Evaluation).filter(Evaluation.interview_id == request.interview_id).all()
+
+    if not evaluations:
+        raise HTTPException(status_code=404, detail="Evaluations for Interview ID not found in the database")
+
+    for evaluation in evaluations:
+        # Get the ASR file S3 key
+        asrfile_s3key = evaluation.asrfile_s3key.replace("s3://seekers3data/", "")
+
+        # Read the transcribed text from the ASR file in S3
+        transcribed_text = read_s3_text_file(S3_CONFIG["S3_BUCKET_NAME"], asrfile_s3key)
+
+        if not transcribed_text:
+            raise HTTPException(status_code=404, detail=f"ASR file not found in S3: {asrfile_s3key}")
+
+        # Calculate scores using GPT-4o mini API
+        semantic_similarity_score, broad_topic_sim_score, grammar_score, disfluency_score = calculate_scores_with_gpt4o(transcribed_text)
+
+        # Update the evaluation with the scores
+        evaluation.semantic_similarity_score = semantic_similarity_score
+        evaluation.broad_topic_sim_score = broad_topic_sim_score
+        evaluation.grammar_score = grammar_score
+        evaluation.disfluency_score = disfluency_score
+        db.commit()
+
+    return ScoringResponse(
+        interview_id=request.interview_id,
+        question_id=evaluation.question_id,
+        semantic_similarity_score=semantic_similarity_score,
+        broad_topic_sim_score=broad_topic_sim_score,
+        grammar_score=grammar_score,
+        disfluency_score=disfluency_score,
+        message="Scoring completed successfully."
+    )
